@@ -2169,6 +2169,8 @@ function buildTrips(perStation) {
 
 function interpolateTrains(trips, nowMs) {
   const trains = [];
+  const LOOKAHEAD_MS = 30000; // 30 seconds of smooth animation
+
   for (const [tripId, stops] of trips) {
     if (stops.length < 2) continue;
 
@@ -2187,30 +2189,43 @@ function interpolateTrains(trips, nowMs) {
     const span = b.time - a.time;
     if (span <= 0) continue;
 
+    // 1. Calculate current position
     const frac = (nowMs - a.time) / span;
+    const lat = a.lat + (b.lat - a.lat) * frac;
+    const lng = a.lng + (b.lng - a.lng) * frac;
+
+    // 2. Calculate position 30 seconds from now
+    const futureTime = nowMs + LOOKAHEAD_MS;
+    let nextLat = b.lat, nextLng = b.lng;
     
-    // Calculate position along the actual curved track!
-    const pos = getPositionOnTrack(a.lat, a.lng, b.lat, b.lng, frac, EXPO_LINE_PATH);
-    const lat = pos.lat;
-    const lng = pos.lng;
+    if (futureTime < b.time) {
+      // Still on the same segment
+      const futureFrac = (futureTime - a.time) / span;
+      nextLat = a.lat + (b.lat - a.lat) * futureFrac;
+      nextLng = a.lng + (b.lng - a.lng) * futureFrac;
+    } else {
+      // It will arrive at the next station. Check if there's a segment after that.
+      for (let i = 1; i < stops.length - 1; i++) {
+        if (stops[i].time <= futureTime && futureTime <= stops[i + 1].time) {
+          const nextSegA = stops[i];
+          const nextSegB = stops[i + 1];
+          const nextSpan = nextSegB.time - nextSegA.time;
+          const nextFrac = (futureTime - nextSegA.time) / nextSpan;
+          nextLat = nextSegA.lat + (nextSegB.lat - nextSegA.lat) * nextFrac;
+          nextLng = nextSegA.lng + (nextSegB.lng - nextSegA.lng) * nextFrac;
+          break;
+        }
+      }
+    }
 
     const headsign = (a.headsign || '').replace(/^Expo\s+Line\s+/i, '').trim();
-
-    // Point the arrow towards the next station along the track
-    const bearing = (function() {
-      const dLon = ((b.lng - a.lng) * Math.PI) / 180;
-      const lat1 = (a.lat * Math.PI) / 180;
-      const lat2 = (b.lat * Math.PI) / 180;
-      const y = Math.sin(dLon) * Math.cos(lat2);
-      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-      return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-    })();
 
     trains.push({
       tripId,
       lat,
       lng,
-      heading: bearing,
+      nextLat, // <-- Send the future position
+      nextLng,
       headsign: headsign || null,
       fromStation: a.stationId,
       fromLat: a.lat,

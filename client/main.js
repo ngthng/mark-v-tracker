@@ -141,6 +141,8 @@ function fetchArrivals(stationId, containerId) {
 /* ---------------- Train markers ---------------- */
 
 let trainMarkers = [];
+let animationFrameId = null; 
+let lastFetchTime = 0;       
 let trainPollTimer = null;
 
 function bearingBetween(from, to) {
@@ -165,50 +167,96 @@ async function loadTrains() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
-    clearTrainMarkers();
-
-    for (const t of data.trains || []) {
-      const rotation = t.heading || 0;
-
-      const marker = new google.maps.Marker({
-        position: { lat: t.lat, lng: t.lng },
-        map,
-        title: `${t.headsign || 'Expo Line'} — ${t.minutesToNext} min to next station`,
-        icon: {
-          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-          scale: 4,
-          rotation,
-          fillColor: '#ff6b00',
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 1.5,
-        },
-        zIndex: 100,
-      });
-
-      marker.addListener('click', () => {
-        const iw = new google.maps.InfoWindow({
-          content: `<div style="font-family: sans-serif; font-size: 13px; min-width: 140px;">
-                      <strong>${escapeHtml(t.headsign || 'Expo Line')}</strong><br/>
-                      Next station: <strong>${t.minutesToNext} min</strong>
-                    </div>`,
+    // Clear existing markers if this is the first load or array length changed
+    if (trainMarkers.length !== data.trains.length) {
+      clearTrainMarkers();
+      for (const t of data.trains) {
+        const marker = new google.maps.Marker({
+          map,
+          position: { lat: t.lat, lng: t.lng },
+          icon: {
+            path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+            scale: 4,
+            rotation: 0,
+            fillColor: '#ff6b00',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 1.5,
+          },
+          zIndex: 100,
         });
-        iw.open(map, marker);
-      });
 
-      trainMarkers.push(marker);
+        marker.addListener('click', () => {
+          const iw = new google.maps.InfoWindow({
+            content: `<div style="font-family: sans-serif; font-size: 13px;">
+                        <strong>${escapeHtml(t.headsign || 'Expo Line')}</strong><br/>
+                        Next: <strong>${t.minutesToNext} min</strong>
+                      </div>`,
+          });
+          iw.open(map, marker);
+        });
+
+        trainMarkers.push(marker);
+      }
+    }
+
+    lastFetchTime = performance.now();
+
+    // Update the animation targets
+    data.trains.forEach((t, i) => {
+      const m = trainMarkers[i];
+      if (!m) return;
+      
+      // Store the interpolation data on the marker itself
+      m._anim = {
+        startLat: t.lat,
+        startLng: t.lng,
+        endLat: t.nextLat,
+        endLng: t.nextLng,
+        // Point the arrow from current pos to future pos
+        bearing: bearingBetween({ lat: t.lat, lng: t.lng }, { lat: t.nextLat, lng: t.nextLng })
+      };
+    });
+
+    // Start the animation loop if not already running
+    if (!animationFrameId) {
+      animateTrains();
     }
 
     const counter = document.getElementById('train-count');
     if (counter) {
-      counter.textContent =
-        data.trains && data.trains.length > 0
-          ? `${data.trains.length} train${data.trains.length === 1 ? '' : 's'} in service`
-          : 'No trains currently running';
+      counter.textContent = data.trains.length > 0
+        ? `${data.trains.length} train${data.trains.length === 1 ? '' : 's'} in service`
+        : 'No trains currently running';
     }
   } catch (e) {
     console.error('loadTrains:', e);
   }
+}
+
+function animateTrains() {
+  const now = performance.now();
+  const elapsed = now - lastFetchTime;
+  // The server calculated the 30-second future position. 
+  // We map the elapsed real-time to a 0-1 ratio.
+  const ratio = Math.min(elapsed / 30000, 1);
+
+  trainMarkers.forEach(m => {
+    if (!m._anim) return;
+    const { startLat, startLng, endLat, endLng, bearing } = m._anim;
+
+    const currentLat = startLat + (endLat - startLat) * ratio;
+    const currentLng = startLng + (endLng - startLng) * ratio;
+
+    m.setPosition({ lat: currentLat, lng: currentLng });
+    
+    // Update the arrow rotation smoothly
+    const icon = m.getIcon();
+    icon.rotation = bearing;
+    m.setIcon(icon);
+  });
+
+  animationFrameId = requestAnimationFrame(animateTrains);
 }
 
 function startTrainPolling() {
@@ -219,7 +267,10 @@ function startTrainPolling() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       clearInterval(trainPollTimer);
-      trainPollTimer = null;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
     } else {
       loadTrains();
       trainPollTimer = setInterval(loadTrains, 30_000);
