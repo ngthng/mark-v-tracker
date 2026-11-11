@@ -1,0 +1,44 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #003366;
+  color: #fff;
+}
+
+header h1 { font-size: 18px; font-weight: 600; }
+
+#refresh-btn {
+  padding: 6px 14px;
+  border: 1px solid #fff;
+  background: transparent;
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#refresh-btn:hover { background: rgba(255, 255, 255, 0.15); }
+
+#map {
+  height: calc(100vh - 52px);
+  width: 100%;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#train-count {
+  font-size: 13px;
+  opacity: 0.85;
+}
