@@ -168,10 +168,7 @@ async function loadTrains() {
     clearTrainMarkers();
 
     for (const t of data.trains || []) {
-      const rotation = bearingBetween(
-        { lat: t.fromLat, lng: t.fromLng },
-        { lat: t.toLat, lng: t.toLng }
-      );
+      const rotation = t.heading || 0;
 
       const marker = new google.maps.Marker({
         position: { lat: t.lat, lng: t.lng },

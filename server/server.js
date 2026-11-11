@@ -1889,8 +1889,74 @@ const EXPO_LINE_PATH = [
   [49.286020, -123.111710],
 ];
 
-
 app.get('/api/stations', (req, res) => res.json(EXPO_STATIONS));
+
+
+/* ---------------- Helper: Find exactly where the train is on the track between two stations ---------------- */
+function getPositionOnTrack(fromLat, fromLng, toLat, toLng, fraction, fullPath) {
+  const distSq = (p1, p2) => (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2;
+
+  const pFrom = [fromLat, fromLng];
+  const pTo = [toLat, toLng];
+
+  // 1. Find the closest point on the track to the 'from' station
+  let startIdx = 0, minDistFrom = Infinity;
+  for (let i = 0; i < fullPath.length; i++) {
+    const d = distSq(pFrom, [fullPath[i].lat, fullPath[i].lng]);
+    if (d < minDistFrom) { minDistFrom = d; startIdx = i; }
+  }
+
+  // 2. Find the closest point on the track to the 'to' station
+  let endIdx = 0, minDistTo = Infinity;
+  for (let i = 0; i < fullPath.length; i++) {
+    const d = distSq(pTo, [fullPath[i].lat, fullPath[i].lng]);
+    if (d < minDistTo) { minDistTo = d; endIdx = i; }
+  }
+
+  // Fallback to straight line if we can't find them
+  if (startIdx === endIdx) {
+    return { lat: fromLat + (toLat - fromLat) * fraction, lng: fromLng + (toLng - fromLng) * fraction };
+  }
+
+  // 3. Extract the slice of track between the two stations
+  const direction = startIdx < endIdx ? 1 : -1;
+  const segment = [];
+  for (let i = startIdx; i !== endIdx + direction; i += direction) {
+    segment.push(fullPath[i]);
+  }
+
+  // 4. Calculate total geometric distance of this track slice
+  let totalDist = 0;
+  const distances = [];
+  for (let i = 0; i < segment.length - 1; i++) {
+    // Euclidean distance is fine here since we just need proportional scaling
+    const d = Math.hypot(segment[i+1].lat - segment[i].lat, segment[i+1].lng - segment[i].lng);
+    distances.push(d);
+    totalDist += d;
+  }
+
+  // 5. Find the exact point at `fraction` along the track
+  const targetDist = totalDist * fraction;
+  let currentDist = 0;
+
+  for (let i = 0; i < segment.length - 1; i++) {
+    const p1 = segment[i];
+    const p2 = segment[i+1];
+    const d = distances[i];
+
+    if (currentDist + d >= targetDist) {
+      const remaining = targetDist - currentDist;
+      const segFraction = d === 0 ? 0 : remaining / d;
+      return {
+        lat: p1.lat + (p2.lat - p1.lat) * segFraction,
+        lng: p1.lng + (p2.lng - p1.lng) * segFraction
+      };
+    }
+    currentDist += d;
+  }
+
+  return { lat: segment[segment.length - 1].lat, lng: segment[segment.length - 1].lng };
+}
 
 /* ---------------- Transitous helpers ---------------- */
 
@@ -2122,14 +2188,29 @@ function interpolateTrains(trips, nowMs) {
     if (span <= 0) continue;
 
     const frac = (nowMs - a.time) / span;
-    const lat = a.lat + (b.lat - a.lat) * frac;
-    const lng = a.lng + (b.lng - a.lng) * frac;
+    
+    // Calculate position along the actual curved track!
+    const pos = getPositionOnTrack(a.lat, a.lng, b.lat, b.lng, frac, EXPO_LINE_PATH);
+    const lat = pos.lat;
+    const lng = pos.lng;
+
     const headsign = (a.headsign || '').replace(/^Expo\s+Line\s+/i, '').trim();
+
+    // Point the arrow towards the next station along the track
+    const bearing = (function() {
+      const dLon = ((b.lng - a.lng) * Math.PI) / 180;
+      const lat1 = (a.lat * Math.PI) / 180;
+      const lat2 = (b.lat * Math.PI) / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+      return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+    })();
 
     trains.push({
       tripId,
       lat,
       lng,
+      heading: bearing,
       headsign: headsign || null,
       fromStation: a.stationId,
       fromLat: a.lat,
