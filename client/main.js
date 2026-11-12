@@ -173,10 +173,8 @@ async function loadTrains() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
-    // Rebuild markers if the train count changed
     if (trainMarkers.length !== data.trains.length) {
       clearTrainMarkers();
-
       for (let i = 0; i < data.trains.length; i++) {
         const marker = new google.maps.Marker({
           map,
@@ -193,19 +191,14 @@ async function loadTrains() {
           zIndex: 100,
         });
 
-        // Click handler reads from the marker's own _data, not a captured variable
         marker.addListener('click', () => {
           if (!marker._data) return;
           const d = marker._data;
-
+          
           const shortTripId = d.tripId ? d.tripId.split('_').pop() : 'Unknown';
           const cleanHeadsign = d.headsign ? d.headsign.replace(/^To\s+/, '') : 'Expo Line';
-          const nextStation = d.toStation
-            ? d.toStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-            : 'Unknown';
-          const lastStation = d.fromStation
-            ? d.fromStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-            : 'Unknown';
+          const nextStation = d.toStation ? d.toStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unknown';
+          const lastStation = d.fromStation ? d.fromStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Unknown';
 
           const iw = new google.maps.InfoWindow({
             content: `
@@ -216,6 +209,10 @@ async function loadTrains() {
                 <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                   <span style="color: #666;">Train ID:</span>
                   <strong style="font-family: monospace;">${escapeHtml(shortTripId)}</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="color: #666;">Status:</span>
+                  <strong>${d.status === 'AT_STATION' ? 'At Platform' : 'In Transit'}</strong>
                 </div>
                 <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                   <span style="color: #666;">Next Stop:</span>
@@ -241,23 +238,23 @@ async function loadTrains() {
 
     lastFetchTime = performance.now();
 
-    // Attach fresh data + animation targets to every marker
     data.trains.forEach((t, i) => {
       const m = trainMarkers[i];
       if (!m) return;
 
-      // Store the latest server payload so the click handler is always current
       m._data = t;
+      
+      // Change color based on status
+      const icon = m.getIcon();
+      icon.fillColor = t.status === 'AT_STATION' ? '#888888' : '#ff6b00';
+      m.setIcon(icon);
 
       m._anim = {
         startLat: t.lat,
         startLng: t.lng,
         endLat: t.nextLat,
         endLng: t.nextLng,
-        bearing: bearingBetween(
-          { lat: t.lat, lng: t.lng },
-          { lat: t.nextLat, lng: t.nextLng }
-        ),
+        bearing: bearingBetween({ lat: t.lat, lng: t.lng }, { lat: t.nextLat, lng: t.nextLng })
       };
     });
 

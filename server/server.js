@@ -1904,9 +1904,18 @@ function interpolateTrains(trips, nowMs) {
   const LOOKAHEAD_MS = 30000;
 
   for (const [tripId, stops] of trips) {
-    if (stops.length < 2) continue;
+    // Allow trips with only 1 stop (e.g. arriving at terminus)
+    if (stops.length === 0) continue;
 
     let segment = null;
+    let status = 'IN_TRANSIT';
+    let currentPos = null;
+    let nextPos = null;
+    let currentStation = null;
+    let nextStation = null;
+    let minutesToNext = 0;
+
+    // 1. Find where the train is right now
     for (let i = 0; i < stops.length - 1; i++) {
       const a = stops[i];
       const b = stops[i + 1];
@@ -1915,52 +1924,68 @@ function interpolateTrains(trips, nowMs) {
         break;
       }
     }
-    if (!segment) continue;
 
-    const { a, b } = segment;
-    const span = b.time - a.time;
-    if (span <= 0) continue;
+    if (segment) {
+      // Train is moving between two stations
+      const { a, b } = segment;
+      const span = b.time - a.time;
+      const frac = (nowMs - a.time) / span;
+      
+      currentPos = {
+        lat: a.lat + (b.lat - a.lat) * frac,
+        lng: a.lng + (b.lng - a.lng) * frac
+      };
+      currentStation = a.stationId;
+      nextStation = b.stationId;
+      minutesToNext = Math.max(0, Math.round((b.time - nowMs) / 60000));
 
-    // 1. Current position along the TRACK
-    const frac = (nowMs - a.time) / span;
-    const pos = getPositionOnTrack(a.lat, a.lng, b.lat, b.lng, frac);
-
-    // 2. Future position (30s from now) along the TRACK
-    const futureTime = nowMs + LOOKAHEAD_MS;
-    let nextPos = { lat: b.lat, lng: b.lng };
-    
-    if (futureTime < b.time) {
-      const futureFrac = (futureTime - a.time) / span;
-      nextPos = getPositionOnTrack(a.lat, a.lng, b.lat, b.lng, futureFrac);
-    } else {
-      for (let i = 1; i < stops.length - 1; i++) {
-        if (stops[i].time <= futureTime && futureTime <= stops[i + 1].time) {
-          const nextSegA = stops[i];
-          const nextSegB = stops[i + 1];
-          const nextSpan = nextSegB.time - nextSegA.time;
-          const nextFrac = (futureTime - nextSegA.time) / nextSpan;
-          nextPos = getPositionOnTrack(nextSegA.lat, nextSegA.lng, nextSegB.lat, nextSegB.lng, nextFrac);
-          break;
-        }
+      // 30-second lookahead for smooth animation
+      const futureTime = nowMs + LOOKAHEAD_MS;
+      if (futureTime < b.time) {
+        const futureFrac = (futureTime - a.time) / span;
+        nextPos = {
+          lat: a.lat + (b.lat - a.lat) * futureFrac,
+          lng: a.lng + (b.lng - a.lng) * futureFrac
+        };
+      } else {
+        nextPos = { lat: b.lat, lng: b.lng }; // Arrives at next station
       }
+    } else {
+      // Train is sitting at a station (either just arrived, or hasn't departed yet)
+      const firstFutureStop = stops.find(s => s.time > nowMs);
+      const lastPastStop = [...stops].reverse().find(s => s.time <= nowMs);
+      
+      if (!firstFutureStop && !lastPastStop) continue;
+
+      const station = lastPastStop || firstFutureStop;
+      currentPos = { lat: station.lat, lng: station.lng };
+      nextPos = { lat: station.lat, lng: station.lng };
+      
+      currentStation = station.stationId;
+      nextStation = firstFutureStop ? firstFutureStop.stationId : station.stationId;
+      minutesToNext = firstFutureStop ? Math.max(0, Math.round((firstFutureStop.time - nowMs) / 60000)) : 0;
+      
+      status = 'AT_STATION';
     }
 
-    const headsign = (a.headsign || '').replace(/^Expo\s+Line\s+/i, '').trim();
+    const headsign = (stops[0].headsign || '').replace(/^Expo\s+Line\s+/i, '').trim();
 
     trains.push({
       tripId,
-      lat: pos.lat,
-      lng: pos.lng,
+      lat: currentPos.lat,
+      lng: currentPos.lng,
       nextLat: nextPos.lat,
       nextLng: nextPos.lng,
+      status: status, // <-- Frontend uses this for color
       headsign: headsign || null,
-      fromStation: a.stationId,
-      fromLat: a.lat,
-      fromLng: a.lng,
-      toStation: b.stationId,
-      toLat: b.lat,
-      toLng: b.lng,
-      minutesToNext: Math.max(0, Math.round((b.time - nowMs) / 60000)),
+      fromStation: currentStation,
+      toStation: nextStation,
+      minutesToNext,
+      // Required for frontend bearing calculation
+      fromLat: currentPos.lat,
+      fromLng: currentPos.lng,
+      toLat: nextPos.lat,
+      toLng: nextPos.lng,
     });
   }
   return trains;
