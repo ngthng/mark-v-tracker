@@ -64,34 +64,39 @@ function loadStations() {
 function drawRoutes(markers) {
   fetch('/api/route-geometry')
     .then(res => res.json())
-    .then(({ main, branch }) => {
-      // Glow underlay — a thicker, semi-transparent line beneath the main stroke
-      // that gives the route a soft edge and reads well against busy map tiles.
-      const glowOpts = {
-        map,
-        geodesic: true,
-        strokeColor: '#0033a0',
-        strokeOpacity: 0.22,
-        strokeWeight: 12,
-        zIndex: 1,
-      };
-      new google.maps.Polyline({ ...glowOpts, path: main });
-      new google.maps.Polyline({ ...glowOpts, path: branch });
+    .then(data => {
+      console.log("Received geometry from server:", data);
 
-      // Main stroke — solid, Transit-planner blue.
-      const strokeOpts = {
-        map,
-        geodesic: true,
-        strokeColor: '#0033a0',
-        strokeOpacity: 0.9,
-        strokeWeight: 4,
-        zIndex: 2,
-      };
-      new google.maps.Polyline({ ...strokeOpts, path: main });
-      new google.maps.Polyline({ ...strokeOpts, path: branch });
+      const main = data.main || [];
+      const branch = data.branch || [];
 
-      // Station halos — small white rings drawn under each station marker
-      // so stations pop visually against the line.
+      // Draw Main Line
+      if (main.length > 0) {
+        new google.maps.Polyline({
+          map,
+          path: main,
+          geodesic: true,
+          strokeColor: '#0033a0',
+          strokeOpacity: 0.8,
+          strokeWeight: 6,
+          zIndex: 1,
+        });
+      }
+
+      // Draw Branch Line
+      if (branch.length > 0) {
+        new google.maps.Polyline({
+          map,
+          path: branch,
+          geodesic: true,
+          strokeColor: '#0033a0',
+          strokeOpacity: 0.8,
+          strokeWeight: 6,
+          zIndex: 1,
+        });
+      }
+
+      // Station Halos
       markers.forEach(m => {
         new google.maps.Circle({
           map,
@@ -105,8 +110,9 @@ function drawRoutes(markers) {
           zIndex: 3,
         });
       });
+
     })
-    .catch(err => console.error('Error loading route geometry:', err));
+    .catch(err => console.error("Failed to draw routes:", err));
 }
 
 function fetchArrivals(stationId, containerId) {
@@ -237,8 +243,6 @@ async function loadTrains() {
 function animateTrains() {
   const now = performance.now();
   const elapsed = now - lastFetchTime;
-  // The server calculated the 30-second future position. 
-  // We map the elapsed real-time to a 0-1 ratio.
   const ratio = Math.min(elapsed / 30000, 1);
 
   trainMarkers.forEach(m => {
@@ -250,7 +254,6 @@ function animateTrains() {
 
     m.setPosition({ lat: currentLat, lng: currentLng });
     
-    // Update the arrow rotation smoothly
     const icon = m.getIcon();
     icon.rotation = bearing;
     m.setIcon(icon);
