@@ -173,13 +173,14 @@ async function loadTrains() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
-    // Clear existing markers if this is the first load or array length changed
+    // Rebuild markers if the train count changed
     if (trainMarkers.length !== data.trains.length) {
       clearTrainMarkers();
-      for (const t of data.trains) {
+
+      for (let i = 0; i < data.trains.length; i++) {
         const marker = new google.maps.Marker({
           map,
-          position: { lat: t.lat, lng: t.lng },
+          position: { lat: data.trains[i].lat, lng: data.trains[i].lng },
           icon: {
             path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
             scale: 4,
@@ -192,12 +193,44 @@ async function loadTrains() {
           zIndex: 100,
         });
 
+        // Click handler reads from the marker's own _data, not a captured variable
         marker.addListener('click', () => {
+          if (!marker._data) return;
+          const d = marker._data;
+
+          const shortTripId = d.tripId ? d.tripId.split('_').pop() : 'Unknown';
+          const cleanHeadsign = d.headsign ? d.headsign.replace(/^To\s+/, '') : 'Expo Line';
+          const nextStation = d.toStation
+            ? d.toStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+            : 'Unknown';
+          const lastStation = d.fromStation
+            ? d.fromStation.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+            : 'Unknown';
+
           const iw = new google.maps.InfoWindow({
-            content: `<div style="font-family: sans-serif; font-size: 13px;">
-                        <strong>${escapeHtml(t.headsign || 'Expo Line')}</strong><br/>
-                        Next: <strong>${t.minutesToNext} min</strong>
-                      </div>`,
+            content: `
+              <div style="font-family: sans-serif; font-size: 13px; min-width: 220px; line-height: 1.5;">
+                <div style="background: #0033a0; color: white; padding: 4px 8px; border-radius: 4px; margin-bottom: 8px; font-weight: bold;">
+                  Expo Line to ${escapeHtml(cleanHeadsign)}
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="color: #666;">Train ID:</span>
+                  <strong style="font-family: monospace;">${escapeHtml(shortTripId)}</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="color: #666;">Next Stop:</span>
+                  <strong>${escapeHtml(nextStation)}</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="color: #666;">Arriving In:</span>
+                  <strong style="color: #e63946;">${d.minutesToNext} min</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: #666;">Last Stop:</span>
+                  <span>${escapeHtml(lastStation)}</span>
+                </div>
+              </div>
+            `,
           });
           iw.open(map, marker);
         });
@@ -208,23 +241,26 @@ async function loadTrains() {
 
     lastFetchTime = performance.now();
 
-    // Update the animation targets
+    // Attach fresh data + animation targets to every marker
     data.trains.forEach((t, i) => {
       const m = trainMarkers[i];
       if (!m) return;
-      
-      // Store the interpolation data on the marker itself
+
+      // Store the latest server payload so the click handler is always current
+      m._data = t;
+
       m._anim = {
         startLat: t.lat,
         startLng: t.lng,
         endLat: t.nextLat,
         endLng: t.nextLng,
-        // Point the arrow from current pos to future pos
-        bearing: bearingBetween({ lat: t.lat, lng: t.lng }, { lat: t.nextLat, lng: t.nextLng })
+        bearing: bearingBetween(
+          { lat: t.lat, lng: t.lng },
+          { lat: t.nextLat, lng: t.nextLng }
+        ),
       };
     });
 
-    // Start the animation loop if not already running
     if (!animationFrameId) {
       animateTrains();
     }

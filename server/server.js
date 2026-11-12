@@ -1686,32 +1686,41 @@ function distanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-async function resolveStopId(station) {
-  if (stopIdCache.has(station.id)) return stopIdCache.get(station.id);
+// Hardcoded TransLink parent station IDs for the Expo Line
+const EXPO_PARENT_IDS = {
+  waterfront:      'ca-bc-TransLink_12034',
+  burrard:         'ca-bc-TransLink_99933',
+  granville:       'ca-bc-TransLink_99934',
+  stadium:         'ca-bc-TransLink_99935',
+  main_street:     'ca-bc-TransLink_99936',
+  commercial:      'ca-bc-TransLink_99917',
+  nanaimo:         'ca-bc-TransLink_99937',
+  '29th_ave':      'ca-bc-TransLink_99938',
+  joyce:           'ca-bc-TransLink_99939',
+  patterson:       'ca-bc-TransLink_99940',
+  metrotown:       'ca-bc-TransLink_99941',
+  royal_oak:       'ca-bc-TransLink_99942',
+  edmonds:         'ca-bc-TransLink_99943',
+  '22nd_street':   'ca-bc-TransLink_99944',
+  new_westminster: 'ca-bc-TransLink_99945',
+  columbia:        'ca-bc-TransLink_99946',
+  scott_road:      'ca-bc-TransLink_99949',
+  gateway:         'ca-bc-TransLink_99950',
+  surrey_central:  'ca-bc-TransLink_99951',
+  king_george:     'ca-bc-TransLink_99952',
+  sapperton:       'ca-bc-TransLink_99947',
+  braid:           'ca-bc-TransLink_99948',
+  lougheed:        'ca-bc-TransLink_99926',
+  production_way:  'ca-bc-TransLink_99925'
+};
 
-  const query = `${station.name} Station, Vancouver`;
-  const url = `${TRANSITOUS_BASE}/v1/geocode?text=${encodeURIComponent(query)}&type=STOP`;
-  const res = await fetch(url, { headers: { 'User-Agent': TRANSITOUS_USER_AGENT } });
-  if (!res.ok) throw new Error(`Transitous geocode HTTP ${res.status}`);
-
-  const data = await res.json();
-  const matches = Array.isArray(data) ? data : data.matches || [];
-  if (!matches.length) throw new Error(`No Transitous stop match for "${query}"`);
-
-  let best = null;
-  let bestDist = Infinity;
-  for (const m of matches) {
-    if (typeof m.lat !== 'number' || typeof m.lon !== 'number') continue;
-    const d = distanceKm(station.lat, station.lng, m.lat, m.lon);
-    if (d < bestDist) { bestDist = d; best = m; }
+function resolveStopId(station) {
+  // Simply look up the hardcoded ID. No async, no API calls.
+  const id = EXPO_PARENT_IDS[station.id];
+  if (!id) {
+    throw new Error(`No hardcoded Transitous ID found for ${station.id}`);
   }
-  if (!best) throw new Error(`No usable coordinates for "${query}"`);
-  if (bestDist > 10) {
-    throw new Error(`Closest Transitous match for "${query}" is ${bestDist.toFixed(1)} km away`);
-  }
-
-  stopIdCache.set(station.id, best.id);
-  return best.id;
+  return id;
 }
 
 async function fetchStoptimes(stopId, n = 40) {          
@@ -1756,7 +1765,7 @@ app.get('/api/arrivals/:stationId', async (req, res) => {
   if (!station) return res.status(404).json({ error: 'Unknown station' });
 
   try {
-    const transitousStopId = await resolveStopId(station);
+    const transitousStopId = resolveStopId(station);
     const data = await fetchStoptimes(transitousStopId);
     const stopTimes = Array.isArray(data.stopTimes) ? data.stopTimes : [];
     const nowMs = Date.now();
@@ -1839,7 +1848,7 @@ async function fetchAllStationStopTimes() {
   return Promise.all(
     EXPO_STATIONS.map(async (station) => {
       try {
-        const resolvedStopId = await resolveStopId(station);
+        const resolvedStopId = resolveStopId(station);
         const data = await fetchStoptimes(resolvedStopId, 60);
         return { station, resolvedStopId, stopTimes: data.stopTimes || [] };
       } catch (e) {
@@ -1852,29 +1861,40 @@ async function fetchAllStationStopTimes() {
 
 function buildTrips(perStation) {
   const trips = new Map();
+  
   for (const { station, resolvedStopId, stopTimes } of perStation) {
     if (!resolvedStopId) continue;
+    
     for (const st of stopTimes) {
       const place = st.place || {};
       if (!isAtQueriedStation(place, resolvedStopId)) continue;
       if (!isExpoRoute(st)) continue;
+      
       const tripId = st.tripId;
       if (!tripId) continue;
+      
       const depIso = place.departure || place.scheduledDeparture;
       if (!depIso) continue;
       const t = Date.parse(depIso);
       if (!Number.isFinite(t)) continue;
 
       if (!trips.has(tripId)) trips.set(tripId, []);
-      trips.get(tripId).push({
-        stationId: station.id,
-        lat: station.lat,
-        lng: station.lng,
-        time: t,
-        headsign: st.headsign || null,
-      });
+      
+      const tripStops = trips.get(tripId);
+    
+      // If this trip already has a record for this station, skip it.
+      if (!tripStops.some(s => s.stationId === station.id)) {
+        tripStops.push({
+          stationId: station.id,
+          lat: station.lat,
+          lng: station.lng,
+          time: t,
+          headsign: st.headsign || null,
+        });
+      }
     }
   }
+  
   for (const stops of trips.values()) stops.sort((a, b) => a.time - b.time);
   return trips;
 }
@@ -2008,7 +2028,78 @@ app.get('/api/route-geometry', (req, res) => {
   });
 });
 
+app.get('/api/debug/trains', async (req, res) => {
+  try {
+    // 1. Fetch stoptimes for all stations (using the same cache as the live endpoint)
+    const perStation = await fetchAllStationStopTimes();
+    
+    // 2. Group by tripId
+    const trips = buildTrips(perStation);
+    const nowMs = Date.now();
+    
+    const trainReport = [];
+    
+    for (const [tripId, stops] of trips) {
+      if (stops.length < 2) continue;
+      
+      // Find where the train is right now
+      let currentSegment = null;
+      let nextStops = [];
+      
+      for (let i = 0; i < stops.length; i++) {
+        if (stops[i].time > nowMs) {
+          nextStops = stops.slice(i);
+          if (i > 0) {
+            currentSegment = { from: stops[i-1], to: stops[i] };
+          }
+          break;
+        }
+      }
+      
+      // If the train has already finished its route, skip it
+      if (!currentSegment && nextStops.length === 0) continue;
 
+      const headsign = stops[0].headsign || 'Unknown';
+      
+      trainReport.push({
+        tripId: tripId,
+        headsign: headsign,
+        status: currentSegment ? 'IN_TRANSIT' : 'AT_STATION',
+        currentSegment: currentSegment ? {
+          from: currentSegment.from.stationId,
+          to: currentSegment.to.stationId,
+          departFrom: new Date(currentSegment.from.time).toISOString(),
+          arriveTo: new Date(currentSegment.to.time).toISOString(),
+        } : {
+          station: nextStops[0].stationId,
+          departAt: new Date(nextStops[0].time).toISOString(),
+        },
+        upcomingStops: nextStops.map(s => ({
+          stationId: s.stationId,
+          time: new Date(s.time).toISOString(),
+          minutesAway: Math.max(0, Math.round((s.time - nowMs) / 60000))
+        })).slice(0, 5) // Show next 5 stops
+      });
+    }
+    
+    // Sort so trains currently in transit show up first
+    trainReport.sort((a, b) => {
+      if (a.status === 'IN_TRANSIT' && b.status !== 'IN_TRANSIT') return -1;
+      if (b.status === 'IN_TRANSIT' && a.status !== 'IN_TRANSIT') return 1;
+      return a.tripId.localeCompare(b.tripId);
+    });
+
+    res.json({
+      totalTrains: trainReport.length,
+      timestamp: new Date(nowMs).toISOString(),
+      trains: trainReport
+    });
+    
+  } catch (e) {
+    console.error('debug/trains error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 /* ---------------- SPA fallback ---------------- */
 
